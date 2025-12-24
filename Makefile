@@ -9,8 +9,8 @@ LIB_TARGET = build/libmemorypatch.so
 CLI_TARGET = build/memorypatch
 
 # Source files
-CORE_SRCS = src/core/hooks.c src/core/tracker.c
-ASM_SRCS = src/asm/unwind.asm
+CORE_SRCS = src/core/hooks.c src/core/tracker.c src/core/hashtable.c
+ASM_SRCS = src/asm/unwind.asm src/asm/memcheck.asm
 CLI_SRCS = src/cli/main.c
 
 # Object files

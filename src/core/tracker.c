@@ -8,27 +8,23 @@
 #include <stdint.h>
 #include "tracker.h"
 #include "unwind.h"
+#include "hashtable.h"
 
-#define MAX_STACK_DEPTH 16
+// Note: Allocation struct is now defined in hashtable.h
 
-// Structure to track a single allocation
-typedef struct Allocation {
-    void* ptr;
-    size_t size;
-    void* stack[MAX_STACK_DEPTH];
-    int stack_count;
-    uint64_t timestamp;
-    struct Allocation* next;
-} Allocation;
+static pthread_mutex_t lock;
+static int lock_initialized = 0;
 
-static inline uint64_t rdtsc() {
-    unsigned int lo, hi;
-    __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
-    return ((uint64_t)hi << 32) | lo;
+static void ensure_lock() {
+    if (!lock_initialized) {
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&lock, &attr);
+        pthread_mutexattr_destroy(&attr);
+        lock_initialized = 1;
+    }
 }
-
-static Allocation* head = NULL;
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 // We need to resolve the real malloc/free to allocate our own nodes without recursion
 static void* (*real_malloc)(size_t) = NULL;
@@ -55,10 +51,18 @@ static void init_real_functions() {
 
 void mp_tracker_init(void) {
     if (initialized) return;
+    ensure_lock();
     init_real_functions();
+    ht_init();
     initialized = 1;
     // Register the report generator to run at exit
     atexit(mp_generate_report);
+}
+
+static inline uint64_t rdtsc() {
+    unsigned int lo, hi;
+    __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
+    return ((uint64_t)hi << 32) | lo;
 }
 
 void mp_track_alloc(void* ptr, size_t size) {
@@ -67,20 +71,16 @@ void mp_track_alloc(void* ptr, size_t size) {
 
     // Use real_malloc to allocate the node
     Allocation* node = (Allocation*)real_malloc(sizeof(Allocation));
-    if (!node) return; // OOM in tracker? Bad luck.
+    if (!node) return; // OOM in tracker
 
     node->ptr = ptr;
     node->size = size;
     node->timestamp = rdtsc();
-
-    // Capture stack trace
-    // We pass buffer and max depth
     node->stack_count = mp_unwind(node->stack, MAX_STACK_DEPTH);
 
-    // Add to list (thread-safe)
+    ensure_lock();
     pthread_mutex_lock(&lock);
-    node->next = head;
-    head = node;
+    ht_insert(node);
     pthread_mutex_unlock(&lock);
 }
 
@@ -88,72 +88,77 @@ void mp_track_free(void* ptr) {
     if (!ptr) return;
     if (!initialized) mp_tracker_init();
 
+    ensure_lock();
     pthread_mutex_lock(&lock);
-    Allocation* curr = head;
-    Allocation* prev = NULL;
-
-    while (curr) {
-        if (curr->ptr == ptr) {
-            // Found it, remove from list
-            if (prev) {
-                prev->next = curr->next;
-            } else {
-                head = curr->next;
-            }
-            // Free the node itself using real_free
-            real_free(curr);
-            break;
-        }
-        prev = curr;
-        curr = curr->next;
-    }
+    Allocation* node = ht_remove(ptr);
     pthread_mutex_unlock(&lock);
+
+    if (node) {
+        real_free(node);
+    }
+}
+
+size_t mp_get_allocation_size(void* ptr) {
+    if (!ptr) return 0;
+    if (!initialized) return 0;
+
+    ensure_lock();
+    pthread_mutex_lock(&lock);
+    Allocation* node = ht_find(ptr);
+    size_t size = node ? node->size : 0;
+    pthread_mutex_unlock(&lock);
+
+    return size;
 }
 
 void mp_generate_report(void) {
-    // If we want to support output file configuration, we can read env var or default
     const char* report_file = getenv("MEMORYPATCH_OUTPUT");
     if (!report_file) report_file = "memorypatch_report.txt";
 
     FILE* fp = fopen(report_file, "w");
     if (!fp) {
-        // Try stderr if file fails
         fp = stderr;
         fprintf(fp, "memorypatch: Could not open report file. Printing to stderr.\n");
     }
 
     fprintf(fp, "=== MemoryPatch Leak Report ===\n");
 
+    ensure_lock();
     pthread_mutex_lock(&lock);
-    Allocation* curr = head;
-    int leak_count = 0;
-    size_t total_leaked = 0;
 
-    while (curr) {
-        leak_count++;
-        total_leaked += curr->size;
+    // Iteration helper context
+    struct ReportCtx {
+        FILE* fp;
+        int count;
+        size_t bytes;
+    } ctx = { fp, 0, 0 };
 
-        fprintf(fp, "\nLeak #%d: Address %p, Size %zu bytes, Timestamp %lu\n", leak_count, curr->ptr, curr->size, curr->timestamp);
-        fprintf(fp, "Allocation Stack Trace:\n");
+    void callback(Allocation* curr) {
+        ctx.count++;
+        ctx.bytes += curr->size;
+
+        fprintf(ctx.fp, "\nLeak #%d: Address %p, Size %zu bytes, Timestamp %lu\n", ctx.count, curr->ptr, curr->size, curr->timestamp);
+        fprintf(ctx.fp, "Allocation Stack Trace:\n");
         for (int i = 0; i < curr->stack_count; i++) {
-            // Skip the first few frames if they are inside memorypatch itself
-            // typically frame 0 is mp_unwind, frame 1 is mp_track_alloc, frame 2 is malloc hook
-            // but mp_unwind starts at *its* caller, so:
-            // 0: mp_track_alloc
-            // 1: malloc hook
-            // 2: user code
-            // This depends on inlining, but let's print everything for now
-            fprintf(fp, "  [%d] %p\n", i, curr->stack[i]);
+            Dl_info info;
+            void* addr = curr->stack[i];
+            if (dladdr(addr, &info) && info.dli_sname) {
+                 fprintf(ctx.fp, "  [%d] %p < %s + %td >\n", i, addr, info.dli_sname, (char*)addr - (char*)info.dli_saddr);
+            } else {
+                 fprintf(ctx.fp, "  [%d] %p\n", i, addr);
+            }
         }
-        curr = curr->next;
     }
+
+    ht_iter(callback);
+
     pthread_mutex_unlock(&lock);
 
-    if (leak_count == 0) {
+    if (ctx.count == 0) {
         fprintf(fp, "\nNo memory leaks detected!\n");
     } else {
-        fprintf(fp, "\nTotal Leaks: %d\n", leak_count);
-        fprintf(fp, "Total Bytes Leaked: %zu\n", total_leaked);
+        fprintf(fp, "\nTotal Leaks: %d\n", ctx.count);
+        fprintf(fp, "Total Bytes Leaked: %zu\n", ctx.bytes);
     }
 
     if (fp != stderr) fclose(fp);

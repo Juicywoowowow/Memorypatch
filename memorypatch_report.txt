@@ -1,0 +1,43 @@
+=== MemoryPatch Leak Report ===
+
+Leak #1: Address 0x55e1b838a2a8, Size 4096 bytes, Timestamp 3040562804532
+Allocation Stack Trace:
+  [0] 0x7f913e0bb581 < malloc + 176 >
+  [1] 0x7f913df261b5 < _IO_file_doallocate + 149 >
+  [2] 0x7f913df36524 < _IO_doallocbuf + 84 >
+  [3] 0x7f913df33f90 < _IO_file_overflow + 416 >
+  [4] 0x7f913df34aaf < _IO_file_xsputn + 207 >
+  [5] 0x7f913df28c5d < puts + 125 >
+  [6] 0x55e1b7c72274
+  [7] 0x7f913decb1ca
+  [8] 0x7f913decb28b < __libc_start_main + 139 >
+  [9] 0x55e1b7c720c5
+
+Leak #2: Address 0x55e1b838b458, Size 472 bytes, Timestamp 3040562890076
+Allocation Stack Trace:
+  [0] 0x7f913e0bb581 < malloc + 176 >
+  [1] 0x7f913df26e7f < fopen64 + 31 >
+  [2] 0x7f913e0bbee7 < mp_generate_report + 146 >
+  [3] 0x7f913dee8a76
+  [4] 0x7f913dee8bbe
+  [5] 0x7f913decb1d1
+  [6] 0x7f913decb28b < __libc_start_main + 139 >
+  [7] 0x55e1b7c720c5
+
+Leak #3: Address 0x55e1b838b648, Size 4096 bytes, Timestamp 3040563029623
+Allocation Stack Trace:
+  [0] 0x7f913e0bb581 < malloc + 176 >
+  [1] 0x7f913df261b5 < _IO_file_doallocate + 149 >
+  [2] 0x7f913df36524 < _IO_doallocbuf + 84 >
+  [3] 0x7f913df33f90 < _IO_file_overflow + 416 >
+  [4] 0x7f913df34aaf < _IO_file_xsputn + 207 >
+  [5] 0x7f913df27a12 < _IO_fwrite + 210 >
+  [6] 0x7f913e0bbf40 < mp_generate_report + 235 >
+  [7] 0x7f913dee8a76
+  [8] 0x7f913dee8bbe
+  [9] 0x7f913decb1d1
+  [10] 0x7f913decb28b < __libc_start_main + 139 >
+  [11] 0x55e1b7c720c5
+
+Total Leaks: 3
+Total Bytes Leaked: 8664

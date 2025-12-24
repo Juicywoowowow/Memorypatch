@@ -22,6 +22,13 @@ void mp_track_alloc(void* ptr, size_t size);
 void mp_track_free(void* ptr);
 
 /*
+ * Get the size of an allocation.
+ * @param ptr The address to look up.
+ * @return The size, or 0 if not found.
+ */
+size_t mp_get_allocation_size(void* ptr);
+
+/*
  * Generates the leak report.
  * Usually called automatically via atexit, but exposed here just in case.
  */
