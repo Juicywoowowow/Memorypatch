@@ -1,0 +1,5 @@
+build/
+*.o
+*.so
+tests/leaky_app
+leak_report.txt
